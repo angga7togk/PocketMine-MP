@@ -26,8 +26,6 @@ namespace pocketmine\network\mcpe\handler;
 use pocketmine\nbt\tag\CompoundTag;
 use pocketmine\network\mcpe\cache\CraftingDataCache;
 use pocketmine\network\mcpe\cache\StaticPacketCache;
-use pocketmine\network\mcpe\convert\GlobalItemTypeDictionary;
-use pocketmine\network\mcpe\convert\TypeConverter;
 use pocketmine\network\mcpe\InventoryManager;
 use pocketmine\network\mcpe\NetworkSession;
 use pocketmine\network\mcpe\protocol\PlayerAuthInputPacket;
@@ -63,15 +61,17 @@ class PreSpawnPacketHandler extends ChunkRequestPacketHandler{
 	public function setUp() : void{
 		Timings::$playerNetworkSendPreSpawnGameData->startTiming();
 		try{
-			$dictionaryProtocol = GlobalItemTypeDictionary::getDictionaryProtocol($this->session->getProtocolId());
+			$protocolId = $this->session->getProtocolId();
 			$location = $this->player->getLocation();
 			$world = $location->getWorld();
+
+			$typeConverter = $this->session->getTypeConverter();
 
 			$this->session->getLogger()->debug("Preparing StartGamePacket");
 			$levelSettings = new LevelSettings();
 			$levelSettings->seed = -1;
 			$levelSettings->spawnSettings = new SpawnSettings(SpawnSettings::BIOME_TYPE_DEFAULT, "", DimensionIds::OVERWORLD); //TODO: implement this properly
-			$levelSettings->worldGamemode = TypeConverter::getInstance()->coreGameModeToProtocol($this->server->getGamemode());
+			$levelSettings->worldGamemode = $typeConverter->coreGameModeToProtocol($this->server->getGamemode());
 			$levelSettings->difficulty = $world->getDifficulty();
 			$levelSettings->spawnPosition = BlockPosition::fromVector3($world->getSpawnLocation());
 			$levelSettings->hasAchievementsDisabled = true;
@@ -88,7 +88,7 @@ class PreSpawnPacketHandler extends ChunkRequestPacketHandler{
 			$this->session->sendDataPacket(StartGamePacket::create(
 				$this->player->getId(),
 				$this->player->getId(),
-				TypeConverter::getInstance()->coreGameModeToProtocol($this->player->getGamemode()),
+				$typeConverter->coreGameModeToProtocol($this->player->getGamemode()),
 				$this->player->getOffsetPosition($location),
 				$location->pitch,
 				$location->yaw,
@@ -103,13 +103,13 @@ class PreSpawnPacketHandler extends ChunkRequestPacketHandler{
 				0,
 				"",
 				true,
-				"NetherGames v4.0",
+				"NetherGames v5.0",
 				Uuid::fromString(Uuid::NIL),
 				false,
 				false,
 				[],
 				0,
-				GlobalItemTypeDictionary::getInstance()->getDictionary($dictionaryProtocol)->getEntries(),
+				$typeConverter->getItemTypeDictionary()->getEntries(),
 			));
 
 			$this->session->getLogger()->debug("Sending actor identifiers");
@@ -144,7 +144,7 @@ class PreSpawnPacketHandler extends ChunkRequestPacketHandler{
 			$this->inventoryManager->syncCreative();
 
 			$this->session->getLogger()->debug("Sending crafting data");
-			$this->session->sendDataPacket(CraftingDataCache::getInstance()->getCache($dictionaryProtocol, $this->server->getCraftingManager()));
+			$this->session->sendDataPacket(CraftingDataCache::getInstance($protocolId)->getCache($this->server->getCraftingManager()));
 
 			$this->session->getLogger()->debug("Sending player list");
 			$this->session->syncPlayerList($this->server->getOnlinePlayers());

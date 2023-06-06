@@ -26,7 +26,6 @@ namespace pocketmine\world\particle;
 use pocketmine\block\VanillaBlocks;
 use pocketmine\entity\Entity;
 use pocketmine\math\Vector3;
-use pocketmine\network\mcpe\convert\RuntimeBlockMapping;
 use pocketmine\network\mcpe\protocol\AddActorPacket;
 use pocketmine\network\mcpe\protocol\RemoveActorPacket;
 use pocketmine\network\mcpe\protocol\types\entity\ByteMetadataProperty;
@@ -39,22 +38,16 @@ use pocketmine\network\mcpe\protocol\types\entity\LongMetadataProperty;
 use pocketmine\network\mcpe\protocol\types\entity\PropertySyncData;
 use pocketmine\network\mcpe\protocol\types\entity\StringMetadataProperty;
 
-class FloatingTextParticle extends MappingParticle{
+class FloatingTextParticle extends BlockParticle{
 	//TODO: HACK!
 
-	/** @var string */
-	protected $text;
-	/** @var string */
-	protected $title;
-	/** @var int|null */
-	protected $entityId = null;
-	/** @var bool */
-	protected $invisible = false;
+	protected ?int $entityId = null;
+	protected bool $invisible = false;
 
-	public function __construct(string $text, string $title = ""){
-		$this->text = $text;
-		$this->title = $title;
-
+	public function __construct(
+		protected string $text,
+		protected string $title = ""
+	){
 		parent::__construct(VanillaBlocks::AIR());
 	}
 
@@ -95,7 +88,7 @@ class FloatingTextParticle extends MappingParticle{
 			$name = $this->title . ($this->text !== "" ? "\n" . $this->text : "");
 
 			$actorFlags = (
-				1 << EntityMetadataFlags::IMMOBILE
+				1 << EntityMetadataFlags::NO_AI
 			);
 			$actorMetadata = [
 				EntityMetadataProperties::FLAGS => new LongMetadataProperty($actorFlags),
@@ -103,7 +96,7 @@ class FloatingTextParticle extends MappingParticle{
 				EntityMetadataProperties::BOUNDING_BOX_WIDTH => new FloatMetadataProperty(0.0),
 				EntityMetadataProperties::BOUNDING_BOX_HEIGHT => new FloatMetadataProperty(0.0),
 				EntityMetadataProperties::NAMETAG => new StringMetadataProperty($name),
-				EntityMetadataProperties::VARIANT => new IntMetadataProperty(RuntimeBlockMapping::getInstance()->toRuntimeId($this->b->getFullId(), $this->mappingProtocol)),
+				EntityMetadataProperties::VARIANT => new IntMetadataProperty($this->toRuntimeId()),
 				EntityMetadataProperties::ALWAYS_SHOW_NAMETAG => new ByteMetadataProperty(1),
 			];
 			$p[] = AddActorPacket::create(

@@ -30,7 +30,7 @@ use pocketmine\data\bedrock\BiomeIds;
 use pocketmine\data\bedrock\LegacyBiomeIdToStringIdMap;
 use pocketmine\nbt\tag\CompoundTag;
 use pocketmine\nbt\TreeRoot;
-use pocketmine\network\mcpe\convert\RuntimeBlockMapping;
+use pocketmine\network\mcpe\convert\BlockTranslator;
 use pocketmine\network\mcpe\protocol\ProtocolInfo;
 use pocketmine\network\mcpe\protocol\serializer\NetworkNbtSerializer;
 use pocketmine\network\mcpe\protocol\serializer\PacketSerializer;
@@ -40,14 +40,10 @@ use pocketmine\utils\BinaryStream;
 use pocketmine\world\format\Chunk;
 use pocketmine\world\format\PalettedBlockArray;
 use pocketmine\world\format\SubChunk;
-use function chr;
 use function count;
 use function get_class;
-use function str_repeat;
 
 final class ChunkSerializer{
-	public const LOWER_PADDING_SIZE = 4;
-
 	private function __construct(){
 		//NOOP
 	}
@@ -70,35 +66,25 @@ final class ChunkSerializer{
 	/**
 	 * @return string[]
 	 */
-	public static function serializeSubChunks(Chunk $chunk, RuntimeBlockMapping $blockMapper, PacketSerializerContext $encoderContext) : array
+	public static function serializeSubChunks(Chunk $chunk, BlockTranslator $blockTranslator, PacketSerializerContext $encoderContext) : array
 	{
 		$stream = PacketSerializer::encoder($encoderContext);
-
-		$emptyChunkStream = clone $stream;
-		$emptyChunkStream->putByte(8); //subchunk version 8
-		$emptyChunkStream->putByte(0); //0 layers - client will treat this as all-air
-
 		$subChunks = [];
-
-		//TODO: HACK! fill in fake subchunks to make up for the new negative space client-side
-		for($y = 0; $y < self::LOWER_PADDING_SIZE; $y++){
-			$subChunks[] = $emptyChunkStream->getBuffer();
-		}
 
 		$subChunkCount = self::getSubChunkCount($chunk);
 		for($y = Chunk::MIN_SUBCHUNK_INDEX, $writtenCount = 0; $writtenCount < $subChunkCount; ++$y, ++$writtenCount){
 			$subChunkStream = clone $stream;
-			self::serializeSubChunk($chunk->getSubChunk($y), $blockMapper, $subChunkStream, false);
+			self::serializeSubChunk($chunk->getSubChunk($y), $blockTranslator, $subChunkStream, false);
 			$subChunks[] = $subChunkStream->getBuffer();
 		}
 
 		return $subChunks;
 	}
 
-	public static function serializeFullChunk(Chunk $chunk, RuntimeBlockMapping $blockMapper, PacketSerializerContext $encoderContext, ?string $tiles = null) : string{
+	public static function serializeFullChunk(Chunk $chunk, BlockTranslator $blockTranslator, PacketSerializerContext $encoderContext, ?string $tiles = null) : string{
 		$stream = PacketSerializer::encoder($encoderContext);
 
-		foreach(self::serializeSubChunks($chunk, $blockMapper, $encoderContext) as $subChunk){
+		foreach(self::serializeSubChunks($chunk, $blockTranslator, $encoderContext) as $subChunk){
 			$stream->put($subChunk);
 		}
 
@@ -109,9 +95,11 @@ final class ChunkSerializer{
 	}
 
 	public static function serializeBiomes(Chunk $chunk, PacketSerializer $stream) : void{
-		//TODO: right now we don't support 3D natively, so we just 3Dify our 2D biomes so they fill the column
-		$encodedBiomePalette = self::serializeBiomesAsPalette($chunk);
-		$stream->put(str_repeat($encodedBiomePalette, $stream->getProtocolId() >= ProtocolInfo::PROTOCOL_1_18_30 ? 24 : 25));
+		$biomeIdMap = LegacyBiomeIdToStringIdMap::getInstance();
+		//all biomes must always be written :(
+		for($y = Chunk::MIN_SUBCHUNK_INDEX; $y <= Chunk::MAX_SUBCHUNK_INDEX; ++$y){
+			self::serializeBiomePalette($chunk->getSubChunk($y)->getBiomeArray(), $biomeIdMap, $stream);
+		}
 	}
 
 	public static function serializeBorderBlocks(PacketSerializer $stream) : void {
@@ -129,11 +117,13 @@ final class ChunkSerializer{
 		}
 	}
 
-	public static function serializeSubChunk(SubChunk $subChunk, RuntimeBlockMapping $blockMapper, PacketSerializer $stream, bool $persistentBlockStates) : void{
+	public static function serializeSubChunk(SubChunk $subChunk, BlockTranslator $blockTranslator, PacketSerializer $stream, bool $persistentBlockStates) : void{
 		$layers = $subChunk->getBlockLayers();
 		$stream->putByte(8); //version
 
 		$stream->putByte(count($layers));
+
+		$blockStateDictionary = $blockTranslator->getBlockStateDictionary();
 
 		foreach($layers as $blocks){
 			$bitsPerBlock = $blocks->getBitsPerBlock();
@@ -151,13 +141,41 @@ final class ChunkSerializer{
 			if($persistentBlockStates){
 				$nbtSerializer = new NetworkNbtSerializer();
 				foreach($palette as $p){
-					$stream->put($nbtSerializer->write(new TreeRoot($blockMapper->getBedrockKnownStates()[$blockMapper->toRuntimeId($p, $stream->getProtocolId())])));
+					//TODO: introduce a binary cache for this
+					$state = $blockStateDictionary->generateDataFromStateId($blockTranslator->internalIdToNetworkId($p));
+					if($state === null){
+						$state = $blockTranslator->getFallbackStateData();
+					}
+
+					$stream->put($nbtSerializer->write(new TreeRoot($state->toNbt())));
 				}
 			}else{
 				foreach($palette as $p){
-					$stream->put(Binary::writeUnsignedVarInt($blockMapper->toRuntimeId($p, $stream->getProtocolId()) << 1));
+					$stream->put(Binary::writeUnsignedVarInt($blockTranslator->internalIdToNetworkId($p) << 1));
 				}
 			}
+		}
+	}
+
+	private static function serializeBiomePalette(PalettedBlockArray $biomePalette, LegacyBiomeIdToStringIdMap $biomeIdMap, PacketSerializer $stream) : void{
+		$biomePaletteBitsPerBlock = $biomePalette->getBitsPerBlock();
+		$stream->putByte(($biomePaletteBitsPerBlock << 1) | 1); //the last bit is non-persistence (like for blocks), though it has no effect on biomes since they always use integer IDs
+		$stream->put($biomePalette->getWordArray());
+
+		//these LSHIFT by 1 uvarints are optimizations: the client expects zigzag varints here
+		//but since we know they are always unsigned, we can avoid the extra fcall overhead of
+		//zigzag and just shift directly.
+		$biomePaletteArray = $biomePalette->getPalette();
+		if($biomePaletteBitsPerBlock !== 0){
+			$stream->putUnsignedVarInt(count($biomePaletteArray) << 1);
+		}
+
+		foreach($biomePaletteArray as $p){
+			if($biomeIdMap->legacyToString($p) === null){
+				//make sure we aren't sending bogus biomes - the 1.18.0 client crashes if we do this
+				$p = BiomeIds::OCEAN;
+			}
+			$stream->put(Binary::writeUnsignedVarInt($p << 1));
 		}
 	}
 
@@ -184,40 +202,5 @@ final class ChunkSerializer{
 		}
 
 		return $stream->getBuffer();
-	}
-
-	private static function serializeBiomesAsPalette(Chunk $chunk) : string{
-		$biomeIdMap = LegacyBiomeIdToStringIdMap::getInstance();
-		$biomePalette = new PalettedBlockArray($chunk->getBiomeId(0, 0));
-		for($x = 0; $x < 16; ++$x){
-			for($z = 0; $z < 16; ++$z){
-				$biomeId = $chunk->getBiomeId($x, $z);
-				if($biomeIdMap->legacyToString($biomeId) === null){
-					//make sure we aren't sending bogus biomes - the 1.18.0 client crashes if we do this
-					$biomeId = BiomeIds::OCEAN;
-				}
-				for($y = 0; $y < 16; ++$y){
-					$biomePalette->set($x, $y, $z, $biomeId);
-				}
-			}
-		}
-
-		$biomePaletteBitsPerBlock = $biomePalette->getBitsPerBlock();
-		$encodedBiomePalette =
-			chr(($biomePaletteBitsPerBlock << 1) | 1) . //the last bit is non-persistence (like for blocks), though it has no effect on biomes since they always use integer IDs
-			$biomePalette->getWordArray();
-
-		//these LSHIFT by 1 uvarints are optimizations: the client expects zigzag varints here
-		//but since we know they are always unsigned, we can avoid the extra fcall overhead of
-		//zigzag and just shift directly.
-		$biomePaletteArray = $biomePalette->getPalette();
-		if($biomePaletteBitsPerBlock !== 0){
-			$encodedBiomePalette .= Binary::writeUnsignedVarInt(count($biomePaletteArray) << 1);
-		}
-		foreach($biomePaletteArray as $p){
-			$encodedBiomePalette .= Binary::writeUnsignedVarInt($p << 1);
-		}
-
-		return $encodedBiomePalette;
 	}
 }
