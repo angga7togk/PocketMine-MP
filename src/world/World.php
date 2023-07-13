@@ -68,8 +68,6 @@ use pocketmine\math\Facing;
 use pocketmine\math\Vector3;
 use pocketmine\nbt\tag\IntTag;
 use pocketmine\nbt\tag\StringTag;
-use pocketmine\network\mcpe\convert\BlockTranslator;
-use pocketmine\network\mcpe\convert\ItemTranslator;
 use pocketmine\network\mcpe\convert\TypeConverter;
 use pocketmine\network\mcpe\NetworkBroadcastUtils;
 use pocketmine\network\mcpe\protocol\BlockActorDataPacket;
@@ -703,15 +701,10 @@ class World implements ChunkManager{
 
 		$players = $ev->getRecipients();
 		if($sound instanceof BlockSound){
-			foreach(BlockTranslator::sortByProtocol($this->filterViewersForPosition($pos, $players)) as $mappingProtocol => $pl){
-				$sound->setProtocolId($mappingProtocol);
-
-				$pk = $sound->encode($pos);
-
-				if(count($pk) > 0){
-					NetworkBroadcastUtils::broadcastPackets($pl, $pk);
-				}
-			}
+			TypeConverter::broadcastByTypeConverter($players, function(TypeConverter $typeConverter) use ($sound, $pos) : array{
+				$sound->setBlockTranslator($typeConverter->getBlockTranslator());
+				return $sound->encode($pos);
+			});
 		}else{
 			$pk = $sound->encode($pos);
 
@@ -741,10 +734,16 @@ class World implements ChunkManager{
 		}
 
 		$players = $ev->getRecipients();
-		if($particle instanceof BlockParticle){
-			$sortedPlayers = BlockTranslator::sortByProtocol($this->filterViewersForPosition($pos, $players));
-		} elseif($particle instanceof ItemParticle){
-			$sortedPlayers = ItemTranslator::sortByProtocol($this->filterViewersForPosition($pos, $players));
+		if($particle instanceof BlockParticle || $particle instanceof ItemParticle){
+			TypeConverter::broadcastByTypeConverter($players, function(TypeConverter $typeConverter) use ($particle, $pos) : array{
+				if($particle instanceof ItemParticle){
+					$particle->setItemTranslator($typeConverter->getItemTranslator());
+				}else{
+					$particle->setBlockTranslator($typeConverter->getBlockTranslator());
+				}
+
+				return $particle->encode($pos);
+			});
 		}else{
 			$pk = $particle->encode($pos);
 
@@ -756,17 +755,6 @@ class World implements ChunkManager{
 				}else{
 					NetworkBroadcastUtils::broadcastPackets($this->filterViewersForPosition($pos, $ev->getRecipients()), $pk);
 				}
-			}
-			return;
-		}
-
-		foreach($sortedPlayers as $protocolId => $pl){
-			$particle->setProtocolId($protocolId);
-
-			$pk = $particle->encode($pos);
-
-			if(count($pk) > 0){
-				NetworkBroadcastUtils::broadcastPackets($pl, $pk);
 			}
 		}
 	}
@@ -1045,9 +1033,9 @@ class World implements ChunkManager{
 							$p->onChunkChanged($chunkX, $chunkZ, $chunk);
 						}
 					}else{
-						foreach(BlockTranslator::sortByProtocol($this->getChunkPlayers($chunkX, $chunkZ)) as $mappingProtocol => $players){
-							NetworkBroadcastUtils::broadcastPackets($players, $this->createBlockUpdatePackets($mappingProtocol, $blocks));
-						}
+						TypeConverter::broadcastByTypeConverter($this->getChunkPlayers($chunkX, $chunkZ), function(TypeConverter $typeConverter) use ($blocks) : array{
+							return $this->createBlockUpdatePackets($typeConverter, $blocks);
+						});
 					}
 				}
 			}
@@ -1108,10 +1096,10 @@ class World implements ChunkManager{
 	 * @return ClientboundPacket[]
 	 * @phpstan-return list<ClientboundPacket>
 	 */
-	public function createBlockUpdatePackets(int $protocolId, array $blocks) : array{
+	public function createBlockUpdatePackets(TypeConverter $typeConverter, array $blocks) : array{
 		$packets = [];
 
-		$blockTranslator = TypeConverter::getInstance($protocolId)->getBlockTranslator();
+		$blockTranslator = $typeConverter->getBlockTranslator();
 
 		foreach($blocks as $b){
 			if(!($b instanceof Vector3)){
@@ -1123,7 +1111,7 @@ class World implements ChunkManager{
 
 			$tile = $this->getTileAt($b->x, $b->y, $b->z);
 			if($tile instanceof Spawnable && count($fakeStateProperties = $tile->getRenderUpdateBugWorkaroundStateProperties($fullBlock)) > 0){
-				$originalStateData = $blockTranslator->internalIdToNetworkStateData($fullBlock->getStateId());
+				$originalStateData = $blockTranslator->internalIdToCurrentNetworkStateData($fullBlock->getStateId());
 				$fakeStateData = new BlockStateData(
 					$originalStateData->getName(),
 					array_merge($originalStateData->getStates(), $fakeStateProperties),
@@ -1144,7 +1132,7 @@ class World implements ChunkManager{
 			);
 
 			if($tile instanceof Spawnable){
-				$packets[] = BlockActorDataPacket::create($blockPosition, $tile->getSerializedSpawnCompound($protocolId));
+				$packets[] = BlockActorDataPacket::create($blockPosition, $tile->getSerializedSpawnCompound($typeConverter));
 			}
 		}
 
@@ -2078,6 +2066,12 @@ class World implements ChunkManager{
 
 		if($clickVector === null){
 			$clickVector = new Vector3(0.0, 0.0, 0.0);
+		}else{
+			$clickVector = new Vector3(
+				min(1.0, max(0.0, $clickVector->x)),
+				min(1.0, max(0.0, $clickVector->y)),
+				min(1.0, max(0.0, $clickVector->z))
+			);
 		}
 
 		if(!$this->isInWorld($blockReplace->getPosition()->x, $blockReplace->getPosition()->y, $blockReplace->getPosition()->z)){

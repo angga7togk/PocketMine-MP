@@ -28,31 +28,31 @@ use pocketmine\data\bedrock\block\BlockStateData;
 use pocketmine\data\bedrock\block\BlockStateSerializeException;
 use pocketmine\data\bedrock\block\BlockStateSerializer;
 use pocketmine\data\bedrock\block\BlockTypeNames;
-use pocketmine\data\bedrock\block\downgrade\BlockStateDowngrader;
-use pocketmine\data\bedrock\block\downgrade\BlockStateDowngradeSchemaUtils;
-use pocketmine\data\bedrock\block\upgrade\BlockStateUpgrader;
 use pocketmine\network\mcpe\protocol\ProtocolInfo;
 use pocketmine\utils\AssumptionFailedError;
 use pocketmine\utils\Filesystem;
-use pocketmine\utils\ProtocolSingletonTrait;
 use pocketmine\world\format\io\GlobalBlockStateHandlers;
-use Symfony\Component\Filesystem\Path;
 use function str_replace;
-use const pocketmine\BEDROCK_BLOCK_UPGRADE_SCHEMA_PATH;
 
 /**
  * @internal
  */
 final class BlockTranslator{
-	use ProtocolSingletonTrait;
-
 	public const CANONICAL_BLOCK_STATES_PATH = 0;
 	public const BLOCK_STATE_META_MAP_PATH = 1;
 
-	public const PATHS = [
+	private const PATHS = [
 		ProtocolInfo::CURRENT_PROTOCOL => [
 			self::CANONICAL_BLOCK_STATES_PATH => '',
 			self::BLOCK_STATE_META_MAP_PATH => '',
+		],
+		ProtocolInfo::PROTOCOL_1_20_0 => [
+			self::CANONICAL_BLOCK_STATES_PATH => '-1.20.0',
+			self::BLOCK_STATE_META_MAP_PATH => '-1.20.0',
+		],
+		ProtocolInfo::PROTOCOL_1_19_80 => [
+			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.80',
+			self::BLOCK_STATE_META_MAP_PATH => '-1.19.80',
 		],
 		ProtocolInfo::PROTOCOL_1_19_70 => [
 			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.70',
@@ -62,11 +62,27 @@ final class BlockTranslator{
 			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.63',
 			self::BLOCK_STATE_META_MAP_PATH => '-1.19.63',
 		],
+		ProtocolInfo::PROTOCOL_1_19_60 => [
+			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.63',
+			self::BLOCK_STATE_META_MAP_PATH => '-1.19.63',
+		],
 		ProtocolInfo::PROTOCOL_1_19_50 => [
 			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.50',
 			self::BLOCK_STATE_META_MAP_PATH => '-1.19.50',
 		],
 		ProtocolInfo::PROTOCOL_1_19_40 => [
+			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.40',
+			self::BLOCK_STATE_META_MAP_PATH => '-1.19.40',
+		],
+		ProtocolInfo::PROTOCOL_1_19_30 => [
+			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.40',
+			self::BLOCK_STATE_META_MAP_PATH => '-1.19.40',
+		],
+		ProtocolInfo::PROTOCOL_1_19_21 => [
+			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.40',
+			self::BLOCK_STATE_META_MAP_PATH => '-1.19.40',
+		],
+		ProtocolInfo::PROTOCOL_1_19_20 => [
 			self::CANONICAL_BLOCK_STATES_PATH => '-1.19.40',
 			self::BLOCK_STATE_META_MAP_PATH => '-1.19.40',
 		],
@@ -98,29 +114,18 @@ final class BlockTranslator{
 	private BlockStateData $fallbackStateData;
 	private int $fallbackStateId;
 
-	private static function make(int $protocolId) : self{
-		$dictionaryProtocol = self::getDictionaryProtocol($protocolId);
-		$canonicalBlockStatesRaw = Filesystem::fileGetContents(str_replace(".nbt", self::PATHS[$dictionaryProtocol][self::CANONICAL_BLOCK_STATES_PATH] . ".nbt", BedrockDataFiles::CANONICAL_BLOCK_STATES_NBT));
-		$metaMappingRaw = Filesystem::fileGetContents(str_replace(".json", self::PATHS[$dictionaryProtocol][self::BLOCK_STATE_META_MAP_PATH] . ".json", BedrockDataFiles::BLOCK_STATE_META_MAP_JSON));
-
-		if(($blockStateSchemaId = self::getBlockStateSchemaId($protocolId)) !== null){
-			$blockStateDowngrader = new BlockStateDowngrader(BlockStateDowngradeSchemaUtils::loadSchemas(
-				Path::join(BEDROCK_BLOCK_UPGRADE_SCHEMA_PATH, 'nbt_upgrade_schema'),
-				$blockStateSchemaId
-			));
-		}
-
+	public static function loadFromProtocolId(int $protocolId) : BlockTranslator{
+		$canonicalBlockStatesRaw = Filesystem::fileGetContents(str_replace(".nbt", self::PATHS[$protocolId][self::CANONICAL_BLOCK_STATES_PATH] . ".nbt", BedrockDataFiles::CANONICAL_BLOCK_STATES_NBT));
+		$metaMappingRaw = Filesystem::fileGetContents(str_replace(".json", self::PATHS[$protocolId][self::BLOCK_STATE_META_MAP_PATH] . ".json", BedrockDataFiles::BLOCK_STATE_META_MAP_JSON));
 		return new self(
 			BlockStateDictionary::loadFromString($canonicalBlockStatesRaw, $metaMappingRaw),
 			GlobalBlockStateHandlers::getSerializer(),
-			$blockStateDowngrader ?? null
 		);
 	}
 
 	public function __construct(
 		private BlockStateDictionary $blockStateDictionary,
-		private BlockStateSerializer $blockStateSerializer,
-		private ?BlockStateDowngrader $blockStateDowngrader
+		private BlockStateSerializer $blockStateSerializer
 	){
 		$this->fallbackStateData = BlockStateData::current(BlockTypeNames::INFO_UPDATE, []);
 		$this->fallbackStateId = $this->blockStateDictionary->lookupStateIdFromData($this->fallbackStateData) ??
@@ -134,13 +139,10 @@ final class BlockTranslator{
 
 		try{
 			$blockStateData = $this->blockStateSerializer->serialize($internalStateId);
-			if($this->blockStateDowngrader !== null){
-				$blockStateData = $this->blockStateDowngrader->downgrade($blockStateData);
-			}
 
 			$networkId = $this->blockStateDictionary->lookupStateIdFromData($blockStateData);
 			if($networkId === null){
-				throw new AssumptionFailedError("Unmapped blockstate returned by blockstate serializer: " . $blockStateData->toNbt());
+				throw new BlockStateSerializeException("Unmapped blockstate returned by blockstate serializer: " . $blockStateData->toNbt());
 			}
 		}catch(BlockStateSerializeException){
 			//TODO: this will swallow any error caused by invalid block properties; this is not ideal, but it should be
@@ -163,50 +165,19 @@ final class BlockTranslator{
 		return $this->blockStateDictionary->generateDataFromStateId($networkRuntimeId) ?? throw new AssumptionFailedError("We just looked up this state ID, so it must exist");
 	}
 
+	/**
+	 * Looks up the current network state data associated with the given internal state ID.
+	 */
+	public function internalIdToCurrentNetworkStateData(int $internalStateId) : BlockStateData{
+		//we don't directly use the blockstate serializer here - we can't assume that the network blockstate NBT is the
+		//same as the disk blockstate NBT, in case we decide to have different world version than network version (or in
+		//case someone wants to implement multi version).
+		$networkRuntimeId = $this->internalIdToNetworkId($internalStateId);
+
+		return $this->blockStateDictionary->generateCurrentDataFromStateId($networkRuntimeId) ?? throw new AssumptionFailedError("We just looked up this state ID, so it must exist");
+	}
+
 	public function getBlockStateDictionary() : BlockStateDictionary{ return $this->blockStateDictionary; }
 
 	public function getFallbackStateData() : BlockStateData{ return $this->fallbackStateData; }
-
-	public function getBlockStateDowngrader() : ?BlockStateDowngrader{ return $this->blockStateDowngrader; }
-
-	public function getBlockStateUpgrader() : ?BlockStateUpgrader{ return GlobalBlockStateHandlers::getUpgrader()->getBlockStateUpgrader(); }
-
-	public static function getDictionaryProtocol(int $protocolId) : int{
-		return match ($protocolId) {
-			ProtocolInfo::PROTOCOL_1_19_60 => ProtocolInfo::PROTOCOL_1_19_63,
-
-			ProtocolInfo::PROTOCOL_1_19_30,
-			ProtocolInfo::PROTOCOL_1_19_21,
-			ProtocolInfo::PROTOCOL_1_19_20 => ProtocolInfo::PROTOCOL_1_19_40,
-
-			default => $protocolId
-		};
-	}
-
-	public static function convertProtocol(int $protocolId) : int{
-		$dictionaryProtocol = self::getDictionaryProtocol($protocolId);
-		$schemaId = self::getBlockStateSchemaId($dictionaryProtocol);
-
-		return $schemaId === self::getBlockStateSchemaId($dictionaryProtocol) ? $dictionaryProtocol : $protocolId;
-	}
-
-	private static function getBlockStateSchemaId(int $protocolId) : ?int{
-		return match($protocolId){
-			ProtocolInfo::PROTOCOL_1_19_80 => null,
-
-			ProtocolInfo::PROTOCOL_1_19_70 => 181,
-
-			ProtocolInfo::PROTOCOL_1_19_63,
-			ProtocolInfo::PROTOCOL_1_19_60 => 171,
-
-			ProtocolInfo::PROTOCOL_1_19_50,
-			ProtocolInfo::PROTOCOL_1_19_40,
-			ProtocolInfo::PROTOCOL_1_19_10 => 161,
-
-			ProtocolInfo::PROTOCOL_1_19_0 => 151,
-			ProtocolInfo::PROTOCOL_1_18_30 => 141,
-			ProtocolInfo::PROTOCOL_1_18_10 => 121,
-			default => throw new AssumptionFailedError("Unknown protocol ID $protocolId"),
-		};
-	}
 }

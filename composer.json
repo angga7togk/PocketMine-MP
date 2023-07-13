@@ -22,7 +22,7 @@
       "ext-openssl": "*",
       "ext-pcre": "*",
       "ext-phar": "*",
-      "ext-pmmpthread": "^6.0",
+      "ext-pmmpthread": "^6.0.4",
       "ext-reflection": "*",
       "ext-simplexml": "*",
       "ext-sockets": "*",
@@ -31,12 +31,12 @@
       "ext-zip": "*",
       "ext-zlib": ">=1.2.11",
       "composer-runtime-api": "^2.0",
-      "adhocore/json-comment": "^1.1",
-      "fgrosse/phpasn1": "^2.3",
+      "adhocore/json-comment": "~1.2.0",
+      "fgrosse/phpasn1": "~2.5.0",
       "pocketmine/netresearch-jsonmapper": "~v4.2.999",
-      "pocketmine/bedrock-block-upgrade-schema": "~2.1.0+bedrock-1.19.80",
+      "pocketmine/bedrock-block-upgrade-schema": "~3.1.0+bedrock-1.20.10",
       "nethergamesmc/bedrock-data": "dev-master",
-      "pocketmine/bedrock-item-upgrade-schema": "~1.2.0+bedrock-1.19.80",
+      "pocketmine/bedrock-item-upgrade-schema": "~1.4.0+bedrock-1.20.10",
       "nethergamesmc/bedrock-protocol": "dev-master",
       "pocketmine/binaryutils": "^0.2.1",
       "pocketmine/callback-validator": "^1.0.2",
@@ -49,25 +49,15 @@
       "pocketmine/raklib": "^0.15.0",
       "pocketmine/raklib-ipc": "^0.2.0",
       "pocketmine/snooze": "^0.5.0",
-      "ramsey/uuid": "^4.1",
-      "symfony/filesystem": "^6.2"
+      "ramsey/uuid": "~4.7.0",
+      "symfony/filesystem": "~6.2.0"
    },
    "require-dev": {
-      "phpstan/phpstan": "1.10.15",
+      "phpstan/phpstan": "1.10.16",
       "phpstan/phpstan-phpunit": "^1.1.0",
       "phpstan/phpstan-strict-rules": "^1.2.0",
       "phpunit/phpunit": "^10.1"
    },
-   "repositories": [
-      {
-         "type": "vcs",
-         "url":  "git@github.com:NetherGamesMC/BedrockProtocol.git"
-      },
-      {
-         "type": "vcs",
-         "url":  "git@github.com:NetherGamesMC/BedrockData.git"
-      }
-   ],
    "autoload": {
       "psr-4": {
          "pocketmine\\": "src/"
@@ -100,5 +90,15 @@
       "update-translation-apis": [
          "@php build/generate-known-translation-apis.php"
       ]
-   }
+   },
+   "repositories": [
+      {
+         "type": "vcs",
+         "url":  "git@github.com:NetherGamesMC/BedrockProtocol.git"
+      },
+      {
+         "type": "vcs",
+         "url":  "git@github.com:NetherGamesMC/BedrockData.git"
+      }
+   ]
 }

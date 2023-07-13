@@ -29,8 +29,8 @@ use pocketmine\crafting\RecipeIngredient;
 use pocketmine\crafting\ShapedRecipe;
 use pocketmine\crafting\ShapelessRecipe;
 use pocketmine\crafting\ShapelessRecipeType;
+use pocketmine\data\bedrock\item\ItemTypeSerializeException;
 use pocketmine\item\Item;
-use pocketmine\network\mcpe\convert\ItemTranslator;
 use pocketmine\network\mcpe\convert\TypeConverter;
 use pocketmine\network\mcpe\protocol\CraftingDataPacket;
 use pocketmine\network\mcpe\protocol\types\inventory\ItemStack;
@@ -49,7 +49,6 @@ use pocketmine\utils\Binary;
 use pocketmine\utils\ProtocolSingletonTrait;
 use Ramsey\Uuid\Uuid;
 use function array_map;
-use function in_array;
 use function spl_object_id;
 
 final class CraftingDataCache{
@@ -60,12 +59,6 @@ final class CraftingDataCache{
 	 * @phpstan-var array<int, CraftingDataPacket>
 	 */
 	private array $caches = [];
-
-	private int $protocolId;
-
-	public function __construct(int $protocolId){
-		$this->protocolId = $protocolId;
-	}
 
 	public function getCache(CraftingManager $manager) : CraftingDataPacket{
 		$id = spl_object_id($manager);
@@ -92,160 +85,137 @@ final class CraftingDataCache{
 		$recipesWithTypeIds = [];
 
 		foreach($manager->getCraftingRecipeIndex() as $index => $recipe){
-			if($recipe instanceof ShapelessRecipe){
-				$typeTag = match($recipe->getType()->id()){
-					ShapelessRecipeType::CRAFTING()->id() => CraftingRecipeBlockName::CRAFTING_TABLE,
-					ShapelessRecipeType::STONECUTTER()->id() => CraftingRecipeBlockName::STONECUTTER,
-					ShapelessRecipeType::CARTOGRAPHY()->id() => CraftingRecipeBlockName::CARTOGRAPHY_TABLE,
-					ShapelessRecipeType::SMITHING()->id() => CraftingRecipeBlockName::SMITHING_TABLE,
-					default => throw new AssumptionFailedError("Unreachable"),
-				};
+			try{
+				if($recipe instanceof ShapelessRecipe){
+					$typeTag = match($recipe->getType()->id()){
+						ShapelessRecipeType::CRAFTING()->id() => CraftingRecipeBlockName::CRAFTING_TABLE,
+						ShapelessRecipeType::STONECUTTER()->id() => CraftingRecipeBlockName::STONECUTTER,
+						ShapelessRecipeType::CARTOGRAPHY()->id() => CraftingRecipeBlockName::CARTOGRAPHY_TABLE,
+						ShapelessRecipeType::SMITHING()->id() => CraftingRecipeBlockName::SMITHING_TABLE,
+						default => throw new AssumptionFailedError("Unreachable"),
+					};
 
-				$inputs = array_map(function(RecipeIngredient $item) use ($converter) : ?ProtocolRecipeIngredient{
-					try {
+					$inputs = array_map(function(RecipeIngredient $item) use ($converter) : ProtocolRecipeIngredient{
 						return $converter->coreRecipeIngredientToNet($item);
-					} catch(\InvalidArgumentException $e){
-						return null;
-					}
-				}, $recipe->getIngredientList());
-				$outputs = array_map(function(Item $item) use ($converter) : ?ItemStack{
-					try {
+					}, $recipe->getIngredientList());
+					$outputs = array_map(function(Item $item) use ($converter) : ItemStack{
 						return $converter->coreItemStackToNet($item);
-					} catch(\InvalidArgumentException $e){
-						return null;
-					}
-				}, $recipe->getResults());
+					}, $recipe->getResults());
 
-				if(in_array(null, $inputs, true) || in_array(null, $outputs, true)){
-					continue;
-				}
+					$recipesWithTypeIds[] = new ProtocolShapelessRecipe(
+						CraftingDataPacket::ENTRY_SHAPELESS,
+						Binary::writeInt($index),
+						$inputs,
+						$outputs,
+						$nullUUID,
+						$typeTag,
+						50,
+						$index
+					);
+				}elseif($recipe instanceof ShapedRecipe){
+					$inputs = [];
 
-				$recipesWithTypeIds[] = new ProtocolShapelessRecipe(
-					CraftingDataPacket::ENTRY_SHAPELESS,
-					Binary::writeInt($index),
-					$inputs,
-					$outputs,
-					$nullUUID,
-					$typeTag,
-					50,
-					$index
-				);
-			}elseif($recipe instanceof ShapedRecipe){
-				$inputs = [];
-
-				try {
 					for($row = 0, $height = $recipe->getHeight(); $row < $height; ++$row){
 						for($column = 0, $width = $recipe->getWidth(); $column < $width; ++$column){
 							$inputs[$row][$column] = $converter->coreRecipeIngredientToNet($recipe->getIngredient($column, $row));
 						}
 					}
-				} catch(\InvalidArgumentException $e){
-					continue;
-				}
 
-				$outputs = array_map(function(Item $item) use ($converter) : ?ItemStack{
-					try {
+					$outputs = array_map(function(Item $item) use ($converter) : ItemStack{
 						return $converter->coreItemStackToNet($item);
-					} catch(\InvalidArgumentException $e){
-						return null;
-					}
-				}, $recipe->getResults());
+					}, $recipe->getResults());
 
-				if(in_array(null, $outputs, true)){
-					continue;
+					$recipesWithTypeIds[] = new ProtocolShapedRecipe(
+						CraftingDataPacket::ENTRY_SHAPED,
+						Binary::writeInt($index),
+						$inputs,
+						$outputs,
+						$nullUUID,
+						CraftingRecipeBlockName::CRAFTING_TABLE,
+						50,
+						$index
+					);
+				}else{
+					//TODO: probably special recipe types
 				}
-
-				$recipesWithTypeIds[] = new ProtocolShapedRecipe(
-					CraftingDataPacket::ENTRY_SHAPED,
-					Binary::writeInt($index),
-					$inputs,
-					$outputs,
-					$nullUUID,
-					CraftingRecipeBlockName::CRAFTING_TABLE,
-					50,
-					$index
-				);
-			}else{
-				//TODO: probably special recipe types
+			}catch(\InvalidArgumentException|ItemTypeSerializeException){
+				continue;
 			}
 		}
 
 		foreach(FurnaceType::getAll() as $furnaceType){
-			$typeTag = match($furnaceType->id()){
-				FurnaceType::FURNACE()->id() => FurnaceRecipeBlockName::FURNACE,
-				FurnaceType::BLAST_FURNACE()->id() => FurnaceRecipeBlockName::BLAST_FURNACE,
-				FurnaceType::SMOKER()->id() => FurnaceRecipeBlockName::SMOKER,
-				default => throw new AssumptionFailedError("Unreachable"),
-			};
-			foreach($manager->getFurnaceRecipeManager($furnaceType)->getAll() as $recipe){
-				try {
+			try{
+				$typeTag = match($furnaceType->id()){
+					FurnaceType::FURNACE()->id() => FurnaceRecipeBlockName::FURNACE,
+					FurnaceType::BLAST_FURNACE()->id() => FurnaceRecipeBlockName::BLAST_FURNACE,
+					FurnaceType::SMOKER()->id() => FurnaceRecipeBlockName::SMOKER,
+					ShapelessRecipeType::SMITHING()->id() => CraftingRecipeBlockName::SMITHING_TABLE,
+					default => throw new AssumptionFailedError("Unreachable"),
+				};
+				foreach($manager->getFurnaceRecipeManager($furnaceType)->getAll() as $recipe){
 					$input = $converter->coreRecipeIngredientToNet($recipe->getInput())->getDescriptor();
 					$output = $converter->coreItemStackToNet($recipe->getResult());
-				} catch(\InvalidArgumentException $e){
-					continue;
-				}
 
-				if(!$input instanceof IntIdMetaItemDescriptor){
-					throw new AssumptionFailedError();
+					if(!$input instanceof IntIdMetaItemDescriptor){
+						throw new AssumptionFailedError();
+					}
+					$recipesWithTypeIds[] = new ProtocolFurnaceRecipe(
+						CraftingDataPacket::ENTRY_FURNACE_DATA,
+						$input->getId(),
+						$input->getMeta(),
+						$output,
+						$typeTag
+					);
 				}
-				$recipesWithTypeIds[] = new ProtocolFurnaceRecipe(
-					CraftingDataPacket::ENTRY_FURNACE_DATA,
-					$input->getId(),
-					$input->getMeta(),
-					$output,
-					$typeTag
-				);
+			}catch(\InvalidArgumentException|ItemTypeSerializeException){
+				continue;
 			}
 		}
 
 		$potionTypeRecipes = [];
 		foreach($manager->getPotionTypeRecipes() as $recipe){
-			try {
+			try{
 				$input = $converter->coreRecipeIngredientToNet($recipe->getInput())->getDescriptor();
 				$ingredient = $converter->coreRecipeIngredientToNet($recipe->getIngredient())->getDescriptor();
 				if(!$input instanceof IntIdMetaItemDescriptor || !$ingredient instanceof IntIdMetaItemDescriptor){
 					throw new AssumptionFailedError();
 				}
 				$output = $converter->coreItemStackToNet($recipe->getOutput());
-			} catch(\InvalidArgumentException $e){
+
+				$potionTypeRecipes[] = new ProtocolPotionTypeRecipe(
+					$input->getId(),
+					$input->getMeta(),
+					$ingredient->getId(),
+					$ingredient->getMeta(),
+					$output->getId(),
+					$output->getMeta()
+				);
+			}catch(\InvalidArgumentException|ItemTypeSerializeException){
 				continue;
 			}
-
-			$potionTypeRecipes[] = new ProtocolPotionTypeRecipe(
-				$input->getId(),
-				$input->getMeta(),
-				$ingredient->getId(),
-				$ingredient->getMeta(),
-				$output->getId(),
-				$output->getMeta()
-			);
 		}
 
 		$potionContainerChangeRecipes = [];
-		$itemTypeDictionary = TypeConverter::getInstance($this->protocolId)->getItemTypeDictionary();
+		$itemTypeDictionary = $converter->getItemTypeDictionary();
 		foreach($manager->getPotionContainerChangeRecipes() as $recipe){
-			$input = $itemTypeDictionary->fromStringId($recipe->getInputItemId());
-			try {
+			try{
+				$input = $itemTypeDictionary->fromStringId($recipe->getInputItemId());
 				$ingredient = $converter->coreRecipeIngredientToNet($recipe->getIngredient())->getDescriptor();
-			} catch(\InvalidArgumentException $e){
+				if(!$ingredient instanceof IntIdMetaItemDescriptor){
+					throw new AssumptionFailedError();
+				}
+				$output = $itemTypeDictionary->fromStringId($recipe->getOutputItemId());
+				$potionContainerChangeRecipes[] = new ProtocolPotionContainerChangeRecipe(
+					$input,
+					$ingredient->getId(),
+					$output
+				);
+			}catch(\InvalidArgumentException|ItemTypeSerializeException){
 				continue;
 			}
-			if(!$ingredient instanceof IntIdMetaItemDescriptor){
-				throw new AssumptionFailedError();
-			}
-			$output = $itemTypeDictionary->fromStringId($recipe->getOutputItemId());
-			$potionContainerChangeRecipes[] = new ProtocolPotionContainerChangeRecipe(
-				$input,
-				$ingredient->getId(),
-				$output
-			);
 		}
 
 		Timings::$craftingDataCacheRebuild->stopTiming();
 		return CraftingDataPacket::create($recipesWithTypeIds, $potionTypeRecipes, $potionContainerChangeRecipes, [], true);
-	}
-
-	public static function convertProtocol(int $protocolId) : int{
-		return ItemTranslator::convertProtocol($protocolId);
 	}
 }

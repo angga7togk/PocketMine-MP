@@ -23,16 +23,25 @@ declare(strict_types=1);
 
 namespace pocketmine\network\mcpe\convert;
 
+use DaveRandom\CallbackValidator\BuiltInTypes;
+use DaveRandom\CallbackValidator\CallbackType;
+use DaveRandom\CallbackValidator\ParameterType;
+use DaveRandom\CallbackValidator\ReturnType;
 use pocketmine\block\VanillaBlocks;
 use pocketmine\crafting\ExactRecipeIngredient;
 use pocketmine\crafting\MetaWildcardRecipeIngredient;
 use pocketmine\crafting\RecipeIngredient;
 use pocketmine\crafting\TagWildcardRecipeIngredient;
 use pocketmine\data\bedrock\item\BlockItemIdMap;
+use pocketmine\data\bedrock\item\downgrade\ItemIdMetaDowngrader;
+use pocketmine\event\server\TypeConverterConstructEvent;
 use pocketmine\item\Item;
 use pocketmine\item\VanillaItems;
 use pocketmine\nbt\NbtException;
 use pocketmine\nbt\tag\CompoundTag;
+use pocketmine\network\mcpe\NetworkBroadcastUtils;
+use pocketmine\network\mcpe\protocol\ClientboundPacket;
+use pocketmine\network\mcpe\protocol\ProtocolInfo;
 use pocketmine\network\mcpe\protocol\serializer\ItemTypeDictionary;
 use pocketmine\network\mcpe\protocol\types\GameMode as ProtocolGameMode;
 use pocketmine\network\mcpe\protocol\types\inventory\ItemStack;
@@ -41,12 +50,19 @@ use pocketmine\network\mcpe\protocol\types\recipe\RecipeIngredient as ProtocolRe
 use pocketmine\network\mcpe\protocol\types\recipe\StringIdMetaItemDescriptor;
 use pocketmine\network\mcpe\protocol\types\recipe\TagItemDescriptor;
 use pocketmine\player\GameMode;
+use pocketmine\player\Player;
 use pocketmine\utils\AssumptionFailedError;
 use pocketmine\utils\ProtocolSingletonTrait;
+use pocketmine\utils\Utils;
+use pocketmine\world\format\io\GlobalItemDataHandlers;
+use function count;
 use function get_class;
+use function spl_object_id;
 
 class TypeConverter{
-	use ProtocolSingletonTrait;
+	use ProtocolSingletonTrait {
+		ProtocolSingletonTrait::__construct as private __protocolConstruct;
+	}
 
 	private const PM_ID_TAG = "___Id___";
 
@@ -57,19 +73,33 @@ class TypeConverter{
 	private ItemTranslator $itemTranslator;
 	private ItemTypeDictionary $itemTypeDictionary;
 	private int $shieldRuntimeId;
+
 	private SkinAdapter $skinAdapter;
 
 	public function __construct(int $protocolId){
+		$this->__protocolConstruct($protocolId);
+
 		//TODO: inject stuff via constructor
 		$this->blockItemIdMap = BlockItemIdMap::getInstance();
 
-		$this->blockTranslator = BlockTranslator::getInstance($protocolId);
-		$this->itemTranslator = ItemTranslator::getInstance($protocolId);
+		$this->blockTranslator = BlockTranslator::loadFromProtocolId($protocolId);
 
-		$this->itemTypeDictionary = $this->itemTranslator->getDictionary();
+		$this->itemTypeDictionary = ItemTypeDictionaryFromDataHelper::loadFromProtocolId($protocolId);
 		$this->shieldRuntimeId = $this->itemTypeDictionary->fromStringId("minecraft:shield");
 
+		$this->itemTranslator = new ItemTranslator(
+			$this->itemTypeDictionary,
+			$this->blockTranslator->getBlockStateDictionary(),
+			GlobalItemDataHandlers::getSerializer(),
+			GlobalItemDataHandlers::getDeserializer(),
+			$this->blockItemIdMap,
+			new ItemIdMetaDowngrader($this->itemTypeDictionary, ItemTranslator::getItemSchemaId($protocolId))
+		);
+
 		$this->skinAdapter = new LegacySkinAdapter();
+
+		$event = new TypeConverterConstructEvent($this);
+		$event->call();
 	}
 
 	public function getBlockTranslator() : BlockTranslator{ return $this->blockTranslator; }
@@ -131,7 +161,7 @@ class TypeConverter{
 		}elseif($ingredient instanceof ExactRecipeIngredient){
 			$item = $ingredient->getItem();
 			[$id, $meta, $blockRuntimeId] = $this->itemTranslator->toNetworkId($item);
-			if($blockRuntimeId !== ItemTranslator::NO_BLOCK_RUNTIME_ID){
+			if($blockRuntimeId !== null){
 				$meta = $this->blockTranslator->getBlockStateDictionary()->getMetaFromStateId($blockRuntimeId);
 				if($meta === null){
 					throw new AssumptionFailedError("Every block state should have an associated meta value");
@@ -139,6 +169,9 @@ class TypeConverter{
 			}
 			$descriptor = new IntIdMetaItemDescriptor($id, $meta);
 		}elseif($ingredient instanceof TagWildcardRecipeIngredient){
+			if($this->protocolId < ProtocolInfo::PROTOCOL_1_19_30){
+				throw new \InvalidArgumentException("TagWildcardRecipeIngredient: not supported below 1.19.30");
+			}
 			$descriptor = new TagItemDescriptor($ingredient->getTagName());
 		}else{
 			throw new \LogicException("Unsupported recipe ingredient type " . get_class($ingredient) . ", only " . ExactRecipeIngredient::class . " and " . MetaWildcardRecipeIngredient::class . " are supported");
@@ -214,7 +247,7 @@ class TypeConverter{
 			$id,
 			$meta,
 			$itemStack->getCount(),
-			$blockRuntimeId,
+			$blockRuntimeId ?? ItemTranslator::NO_BLOCK_RUNTIME_ID,
 			$nbt,
 			[],
 			[],
@@ -249,7 +282,45 @@ class TypeConverter{
 		return $itemResult;
 	}
 
-	public static function convertProtocol(int $protocolId) : int{
-		return ItemTranslator::convertProtocol($protocolId);
+	/**
+	 * @param Player[] $players
+	 *
+	 * @phpstan-return array{TypeConverter[], Player[][]}
+	 */
+	public static function sortByConverter(array $players) : array{
+		/** @var TypeConverter[] $typeConverters */
+		$typeConverters = [];
+		/** @var Player[][] $converterRecipients */
+		$converterRecipients = [];
+		foreach($players as $recipient){
+			$typeConverter = $recipient->getNetworkSession()->getTypeConverter();
+			$typeConverters[spl_object_id($typeConverter)] = $typeConverter;
+			$converterRecipients[spl_object_id($typeConverter)][spl_object_id($recipient)] = $recipient;
+		}
+
+		return [
+			$typeConverters,
+			$converterRecipients
+		];
+	}
+
+	/**
+	 * @param Player[] $players
+	 * @phpstan-param \Closure(TypeConverter) : ClientboundPacket[] $closure
+	 */
+	public static function broadcastByTypeConverter(array $players, \Closure $closure) : void{
+		Utils::validateCallableSignature(new CallbackType(
+			new ReturnType(BuiltInTypes::ARRAY, ReturnType::COVARIANT),
+			new ParameterType('typeConverter', TypeConverter::class),
+		), $closure);
+
+		[$typeConverters, $converterRecipients] = self::sortByConverter($players);
+
+		foreach($typeConverters as $key => $typeConverter){
+			$packets = $closure($typeConverter);
+			if(count($packets) > 0){
+				NetworkBroadcastUtils::broadcastPackets($converterRecipients[$key], $packets);
+			}
+		}
 	}
 }

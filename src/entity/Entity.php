@@ -45,8 +45,7 @@ use pocketmine\nbt\tag\DoubleTag;
 use pocketmine\nbt\tag\FloatTag;
 use pocketmine\nbt\tag\ListTag;
 use pocketmine\nbt\tag\StringTag;
-use pocketmine\network\mcpe\convert\BlockTranslator;
-use pocketmine\network\mcpe\convert\ItemTranslator;
+use pocketmine\network\mcpe\convert\TypeConverter;
 use pocketmine\network\mcpe\EntityEventBroadcaster;
 use pocketmine\network\mcpe\NetworkBroadcastUtils;
 use pocketmine\network\mcpe\protocol\AddActorPacket;
@@ -770,29 +769,21 @@ abstract class Entity{
 	}
 
 	protected function broadcastMovement(bool $teleport = false) : void{
-		if($teleport){
-			//TODO: HACK! workaround for https://github.com/pmmp/PocketMine-MP/issues/4394
-			//this happens because MoveActor*Packet doesn't clear interpolation targets on the client, so the entity
-			//snaps to the teleport position, but then lerps back to the original position if a normal movement for the
-			//entity was recently broadcasted. This can be seen with players throwing ender pearls.
-			//TODO: remove this if the bug ever gets fixed (lol)
-			foreach($this->hasSpawned as $player){
-				$this->despawnFrom($player);
-				$this->spawnTo($player);
-			}
-		}else{
-			NetworkBroadcastUtils::broadcastPackets($this->hasSpawned, [MoveActorAbsolutePacket::create(
-				$this->id,
-				$this->getOffsetPosition($this->location),
-				$this->location->pitch,
-				$this->location->yaw,
-				$this->location->yaw,
-				(
-					//TODO: if the above hack for #4394 gets removed, we should be setting FLAG_TELEPORT here
-					($this->onGround ? MoveActorAbsolutePacket::FLAG_GROUND : 0)
-				)
-			)]);
-		}
+		NetworkBroadcastUtils::broadcastPackets($this->hasSpawned, [MoveActorAbsolutePacket::create(
+			$this->id,
+			$this->getOffsetPosition($this->location),
+			$this->location->pitch,
+			$this->location->yaw,
+			$this->location->yaw,
+			(
+				//TODO: We should be setting FLAG_TELEPORT here to disable client-side movement interpolation, but it
+				//breaks player teleporting (observers see the player rubberband back to the pre-teleport position while
+				//the teleported player sees themselves at the correct position), and does nothing whatsoever for
+				//non-player entities (movement is still interpolated). Both of these are client bugs.
+				//See https://github.com/pmmp/PocketMine-MP/issues/4394
+				($this->onGround ? MoveActorAbsolutePacket::FLAG_GROUND : 0)
+			)
+		)]);
 	}
 
 	protected function broadcastMotion() : void{
@@ -1688,11 +1679,10 @@ abstract class Entity{
 		$targets = $targets ?? $this->getViewers();
 
 		if($animation instanceof ItemAnimation){
-			foreach(ItemTranslator::sortByProtocol($targets) as $dictionaryProtocol => $players){
-				$animation->setProtocolId($dictionaryProtocol);
-
-				NetworkBroadcastUtils::broadcastPackets($players, $animation->encode());
-			}
+			TypeConverter::broadcastByTypeConverter($targets, function(TypeConverter $typeConverter) use ($animation) : array{
+				$animation->setItemTranslator($typeConverter->getItemTranslator());
+				return $animation->encode();
+			});
 		}else{
 			NetworkBroadcastUtils::broadcastPackets($targets, $animation->encode());
 		}
@@ -1707,11 +1697,10 @@ abstract class Entity{
 			$targets = $targets ?? $this->getViewers();
 
 			if($sound instanceof BlockSound){
-				foreach(BlockTranslator::sortByProtocol($targets) as $mappingProtocol => $players){
-					$sound->setProtocolId($mappingProtocol);
-
-					NetworkBroadcastUtils::broadcastPackets($players, $sound->encode($this->location));
-				}
+				TypeConverter::broadcastByTypeConverter($targets, function(TypeConverter $typeConverter) use ($sound) : array{
+					$sound->setBlockTranslator($typeConverter->getBlockTranslator());
+					return $sound->encode($this->location);
+				});
 			}else{
 				NetworkBroadcastUtils::broadcastPackets($targets, $sound->encode($this->location));
 			}

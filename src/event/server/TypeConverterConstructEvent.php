@@ -21,34 +21,20 @@
 
 declare(strict_types=1);
 
-namespace pocketmine\data\bedrock\item\downgrade;
+namespace pocketmine\event\server;
 
-use function mb_strtolower;
+use pocketmine\network\mcpe\convert\TypeConverter;
 
-final class ItemIdMetaDowngradeSchema{
+/**
+ * Called when a new type converter is constructed.
+ */
+class TypeConverterConstructEvent extends ServerEvent{
 
-	/**
-	 * @param string[]   $renamedIds
-	 * @param string[][] $remappedMetas
-	 * @phpstan-param array<string, string> $renamedIds
-	 * @phpstan-param array<string, array{string, int}> $remappedMetas
-	 */
 	public function __construct(
-		private array $renamedIds,
-		private array $remappedMetas,
-		private int $schemaId
+		private TypeConverter $converter,
 	){}
 
-	public function getSchemaId() : int{ return $this->schemaId; }
-
-	public function renameId(string $id) : ?string{
-		return $this->renamedIds[mb_strtolower($id, 'US-ASCII')] ?? null;
-	}
-
-	/**
-	 * @return array{string, int}
-	 */
-	public function remapMeta(string $id) : ?array{
-		return $this->remappedMetas[mb_strtolower($id, 'US-ASCII')] ?? null;
+	public function getConverter() : TypeConverter{
+		return $this->converter;
 	}
 }
