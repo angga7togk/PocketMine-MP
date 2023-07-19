@@ -76,7 +76,7 @@ abstract class DefaultPermissions{
 		self::registerPermission(new Permission(Names::COMMAND_KILL_OTHER, l10n::pocketmine_permission_command_kill_other()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_KILL_SELF, l10n::pocketmine_permission_command_kill_self()), [$everyoneRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_LIST, l10n::pocketmine_permission_command_list()), [$operatorRoot]);
-		self::registerPermission(new Permission(Names::COMMAND_ME, l10n::pocketmine_permission_command_me()), [$everyoneRoot]);
+		self::registerPermission(new Permission(Names::COMMAND_ME, l10n::pocketmine_permission_command_me()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_OP_GIVE, l10n::pocketmine_permission_command_op_give()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_OP_TAKE, l10n::pocketmine_permission_command_op_take()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_PARTICLE, l10n::pocketmine_permission_command_particle()), [$operatorRoot]);
