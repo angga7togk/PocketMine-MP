@@ -259,10 +259,15 @@ class World implements ChunkManager{
 	private array $playerChunkListeners = [];
 
 	/**
-	 * @var ClientboundPacket[][] chunkHash => [typeConverterHash => ClientboundPacket[]]
-	 * @phpstan-var array<ChunkPosHash, array<TypeConverterHash, list<ClientboundPacket>>>
+	 * @var ClientboundPacket[][] chunkHash => ClientboundPacket[]
+	 * @phpstan-var array<ChunkPosHash, list<ClientboundPacket>>
 	 */
 	private array $packetBuffersByChunk = [];
+	/**
+	 * @var \Closure[][] chunkHash => Closure[]
+	 * @phpstan-var array<ChunkPosHash, list<\Closure(TypeConverter) : ClientboundPacket[]>>
+	 */
+	private array $packetBuffersByChunkTypeConverter = [];
 
 	/**
 	 * @var float[] chunkHash => timestamp of request
@@ -830,30 +835,30 @@ class World implements ChunkManager{
 	 * @phpstan-param \Closure(TypeConverter) : ClientboundPacket[] $closure
 	 */
 	public function broadcastPacketToViewersByTypeConverter(Vector3 $pos, \Closure $closure) : void{
+		$this->broadcastPacketToPlayersByTypeConverterUsingChunk($pos->getFloorX() >> Chunk::COORD_BIT_SIZE, $pos->getFloorZ() >> Chunk::COORD_BIT_SIZE, $closure);
+	}
+
+	/**
+	 * @phpstan-param \Closure(TypeConverter) : ClientboundPacket[] $closure
+	 */
+	private function broadcastPacketToPlayersByTypeConverterUsingChunk(int $chunkX, int $chunkZ, \Closure $closure) : void{
 		Utils::validateCallableSignature(new CallbackType(
 			new ReturnType(BuiltInTypes::ARRAY, ReturnType::COVARIANT),
 			new ParameterType('typeConverter', TypeConverter::class),
 		), $closure);
 
-		[$typeConverters, ] = TypeConverter::sortByConverter($this->getViewersForPosition($pos));
-
-		foreach($typeConverters as $typeConverter){
-			/** @var ClientboundPacket[] $packets */
-			$packets = $closure($typeConverter);
-			foreach($packets as $packet){
-				$this->broadcastPacketToPlayersUsingChunk($pos->getFloorX() >> Chunk::COORD_BIT_SIZE, $pos->getFloorZ() >> Chunk::COORD_BIT_SIZE, $packet, $typeConverter);
-			}
+		if(!isset($this->packetBuffersByChunkTypeConverter[$index = World::chunkHash($chunkX, $chunkZ)])){
+			$this->packetBuffersByChunkTypeConverter[$index] = [$closure];
+		}else{
+			$this->packetBuffersByChunkTypeConverter[$index][] = $closure;
 		}
 	}
 
-	private function broadcastPacketToPlayersUsingChunk(int $chunkX, int $chunkZ, ClientboundPacket $packet, ?TypeConverter $typeConverter = null) : void{
-		/** @phpstan-var int|null $typeConverterId */
-		$typeConverterId = $typeConverter === null ? null : spl_object_id($typeConverter);
-
-		if(!isset($this->packetBuffersByChunk[$index = World::chunkHash($chunkX, $chunkZ)][$typeConverterId])){
-			$this->packetBuffersByChunk[$index][$typeConverterId] = [$packet];
+	private function broadcastPacketToPlayersUsingChunk(int $chunkX, int $chunkZ, ClientboundPacket $packet) : void{
+		if(!isset($this->packetBuffersByChunk[$index = World::chunkHash($chunkX, $chunkZ)])){
+			$this->packetBuffersByChunk[$index] = [$packet];
 		}else{
-			$this->packetBuffersByChunk[$index][$typeConverterId][] = $packet;
+			$this->packetBuffersByChunk[$index][] = $packet;
 		}
 	}
 
@@ -1075,12 +1080,7 @@ class World implements ChunkManager{
 							$p->onChunkChanged($chunkX, $chunkZ, $chunk);
 						}
 					}else{
-						[$typeConverters, ] = TypeConverter::sortByConverter($this->getChunkPlayers($chunkX, $chunkZ));
-						foreach($typeConverters as $typeConverter){
-							foreach($this->createBlockUpdatePackets($typeConverter, $blocks) as $packet){
-								$this->broadcastPacketToPlayersUsingChunk($chunkX, $chunkZ, $packet);
-							}
-						}
+						$this->broadcastPacketToPlayersByTypeConverterUsingChunk($chunkX, $chunkZ, fn(TypeConverter $typeConverter) : array => $this->createBlockUpdatePackets($typeConverter, $blocks));
 					}
 				}
 			}
@@ -1093,21 +1093,27 @@ class World implements ChunkManager{
 			$this->checkSleep();
 		}
 
+		foreach($this->packetBuffersByChunkTypeConverter as $index => $entries){
+			World::getXZ($index, $chunkX, $chunkZ);
+			TypeConverter::broadcastByTypeConverter($this->getChunkPlayers($chunkX, $chunkZ), function(TypeConverter $typeConverter) use ($index, $entries) : array{
+				return array_merge($this->packetBuffersByChunk[$index] ?? [], ...array_map(function(\Closure $closure) use ($typeConverter) : array{
+					return $closure($typeConverter);
+				}, $entries));
+			});
+
+			unset($this->packetBuffersByChunk[$index]);
+		}
+
 		foreach($this->packetBuffersByChunk as $index => $entries){
 			World::getXZ($index, $chunkX, $chunkZ);
-			$universalPackets = $entries[null] ?? [];
-			[$typeConverters, $converterRecipients] = TypeConverter::sortByConverter($this->getChunkPlayers($chunkX, $chunkZ));
-
-			foreach($typeConverters as $key => $typeConverter){
-				$packets = ($entries[$key] ?? []) + $universalPackets;
-
-				if(count($packets) > 0){
-					NetworkBroadcastUtils::broadcastPackets($converterRecipients[$key], $packets);
-				}
+			$chunkPlayers = $this->getChunkPlayers($chunkX, $chunkZ);
+			if(count($chunkPlayers) > 0){
+				NetworkBroadcastUtils::broadcastPackets($chunkPlayers, $entries);
 			}
 		}
 
 		$this->packetBuffersByChunk = [];
+		$this->packetBuffersByChunkTypeConverter = [];
 	}
 
 	public function checkSleep() : void{
