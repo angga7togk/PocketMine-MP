@@ -893,7 +893,9 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer{
 		);
 		$ev->call();
 		if($ev->getJoinMessage() !== ""){
-			$this->getNetworkSession()->onActionBar($ev->getJoinMessage());
+			foreach ($this->server->getOnlinePlayers() as $player){
+				$player->sendActionBarMessage($ev->getJoinMessage());
+			}
 			$this->server->getLogger()->info($ev->getJoinMessage());
 		}
 
@@ -2240,7 +2242,9 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer{
 		$ev = new PlayerQuitEvent($this, "§c".$this->getDisplayName()." leave the game", $reason);
 		$ev->call();
 		if(($quitMessage = $ev->getQuitMessage()) != ""){
-			$this->getNetworkSession()->onActionBar($ev->getQuitMessage());
+			foreach ($this->server->getOnlinePlayers() as $player){
+				$player->sendActionBarMessage($ev->getQuitMessage());
+			}
 			$this->server->getLogger()->info($ev->getQuitMessage());
 		}
 		$this->save();
