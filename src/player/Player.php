@@ -889,11 +889,12 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer{
 		});
 
 		$ev = new PlayerJoinEvent($this,
-			KnownTranslationFactory::multiplayer_player_joined($this->getDisplayName())->prefix(TextFormat::YELLOW)
+			"§e".$this->getDisplayName()." joined the game"
 		);
 		$ev->call();
 		if($ev->getJoinMessage() !== ""){
-			$this->server->broadcastMessage($ev->getJoinMessage());
+			$this->getNetworkSession()->onActionBar($ev->getJoinMessage());
+			$this->server->getLogger()->info($ev->getJoinMessage());
 		}
 
 		$this->noDamageTicks = 60;
@@ -2236,10 +2237,11 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer{
 
 		$this->removeCurrentWindow();
 
-		$ev = new PlayerQuitEvent($this, $quitMessage ?? $this->getLeaveMessage(), $reason);
+		$ev = new PlayerQuitEvent($this, "§c".$this->getDisplayName()." leave the game", $reason);
 		$ev->call();
 		if(($quitMessage = $ev->getQuitMessage()) != ""){
-			$this->server->broadcastMessage($quitMessage);
+			$this->getNetworkSession()->onActionBar($ev->getQuitMessage());
+			$this->server->getLogger()->info($ev->getQuitMessage());
 		}
 		$this->save();
 
