@@ -23,6 +23,7 @@ declare(strict_types=1);
 
 namespace pocketmine\permission;
 
+use pocketmine\command\defaults\XpCommand;
 use pocketmine\lang\KnownTranslationFactory as l10n;
 use pocketmine\permission\DefaultPermissionNames as Names;
 
@@ -85,6 +86,7 @@ abstract class DefaultPermissions{
 		self::registerPermission(new Permission(Names::COMMAND_SAVE_ENABLE, l10n::pocketmine_permission_command_save_enable()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_SAVE_PERFORM, l10n::pocketmine_permission_command_save_enable()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_SAY, l10n::pocketmine_permission_command_say()), [$operatorRoot]);
+		self::registerPermission(new Permission("pocketmine.command.xp", "Xp Command"), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_SEED, l10n::pocketmine_permission_command_seed()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_SETWORLDSPAWN, l10n::pocketmine_permission_command_setworldspawn()), [$operatorRoot]);
 		self::registerPermission(new Permission(Names::COMMAND_SPAWNPOINT_OTHER, l10n::pocketmine_permission_command_spawnpoint_other()), [$operatorRoot]);
